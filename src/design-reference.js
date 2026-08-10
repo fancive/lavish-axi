@@ -214,7 +214,7 @@ export function createDesignOutput() {
       // Only the delivery mechanism is gone: the theme list and component catalogue below are
       // the vocabulary, and they stay, now compiled locally instead of fetched.
       summary:
-        "Lavish does not auto-inject any design system; artifacts stay portable HTML. " +
+        "Lavish does not auto-inject any design system; artifacts stay portable HTML. Paint an explicit page background and readable text. " +
         DESIGN_PRIORITY_RULE +
         " There is no CDN snippet to paste: this installation replaced the CDN fallback with a local compile step, so you still get the full Tailwind + DaisyUI vocabulary - see `styling.build_command` below.",
       layout_safety_snippet: LAYOUT_SAFETY_CSS_SNIPPET,
