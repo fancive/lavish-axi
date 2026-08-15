@@ -11,10 +11,16 @@ const warningSelectionStorageKey = "lavish-axi:warning-selection:" + key;
 const internalQueueKeyField = "_lavishQueueKey";
 const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initialChat : [];
 const MODE_TOGGLE_HOTKEY_KEY = String(sessionData.modeToggleHotkeyKey || "").toLowerCase();
+const END_SESSION_HOTKEY_KEY = String(sessionData.endSessionHotkeyKey || "").toLowerCase();
 
 function isModeToggleHotkeyEvent(event) {
   if (event.shiftKey || event.altKey) return false;
   return Boolean(event.metaKey || event.ctrlKey) && String(event.key || "").toLowerCase() === MODE_TOGGLE_HOTKEY_KEY;
+}
+
+function isEndSessionHotkeyEvent(event) {
+  if (!event.shiftKey || event.altKey) return false;
+  return Boolean(event.metaKey || event.ctrlKey) && String(event.key || "").toLowerCase() === END_SESSION_HOTKEY_KEY;
 }
 
 // LOCAL ADDITION: two chrome hotkeys upstream does not have.
@@ -947,6 +953,7 @@ function markSessionEnded() {
   closeWhiteboard();
   annotationSwitch.disabled = true;
   moreButton.disabled = true;
+  endButton.disabled = true;
   chatInput.disabled = true;
   updateSendState();
   if (presenceBanner) presenceBanner.hidden = true;
@@ -1878,10 +1885,16 @@ document.addEventListener(
   },
   true,
 );
-// LOCAL ADDITION: panel collapse and global send, same capture-phase reasoning.
+// LOCAL ADDITION: panel collapse, global send, and deliberate global end-session shortcut,
+// with the same capture-phase reasoning.
 document.addEventListener(
   "keydown",
   (event) => {
+    if (isEndSessionHotkeyEvent(event)) {
+      event.preventDefault();
+      endSession();
+      return;
+    }
     if (isPanelToggleHotkeyEvent(event)) {
       event.preventDefault();
       setPanelCollapsed(!document.body.classList.contains("panel-collapsed"));
