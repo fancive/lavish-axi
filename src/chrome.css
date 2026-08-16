@@ -683,193 +683,6 @@ body.lavish {
 .button-danger > svg {
   flex-shrink: 0;
 }
-.share-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 80;
-  display: grid;
-  place-items: center;
-  padding: var(--space-16);
-  background: rgba(15, 17, 21, 0.72);
-}
-.share-overlay[hidden] {
-  display: none;
-}
-.share-card {
-  width: min(520px, 100%);
-  max-height: min(760px, calc(100vh - 32px));
-  overflow: auto;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-xl);
-  background: var(--bg-panel);
-  color: var(--fg);
-  box-shadow: var(--shadow-floating);
-  padding: var(--space-12);
-}
-.share-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-8);
-  margin-bottom: var(--space-8);
-}
-.share-kicker {
-  color: var(--fg-label);
-  font-size: var(--text-xs);
-  font-weight: var(--w-bold);
-  letter-spacing: var(--track-label);
-  text-transform: uppercase;
-}
-.share-link {
-  color: inherit;
-  text-decoration: underline;
-  text-decoration-color: var(--border-strong);
-  text-underline-offset: 2px;
-}
-.share-link:hover {
-  color: var(--accent-hover);
-  text-decoration-color: currentColor;
-}
-.share-head h2 {
-  margin: var(--space-2) 0 0;
-  font-family: var(--font-serif);
-  font-size: var(--text-2xl);
-  font-style: italic;
-  font-weight: var(--w-regular);
-  line-height: var(--lh-2xl);
-}
-.share-close {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-  background: transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
-  font: inherit;
-  padding: 0;
-}
-.share-close svg {
-  display: block;
-}
-.share-close:hover {
-  color: var(--fg);
-  border-color: var(--border-strong);
-}
-.share-copy,
-.share-note {
-  margin: 0 0 var(--space-8);
-  color: var(--fg-muted);
-}
-.share-note {
-  color: var(--fg-faint);
-  font-size: var(--text-sm);
-}
-.share-grid {
-  display: grid;
-  gap: var(--space-8);
-  margin-top: var(--space-10);
-}
-.share-grid label,
-.share-result label {
-  display: grid;
-  gap: var(--space-4);
-  min-width: 0;
-  color: var(--fg-muted);
-  font-size: var(--text-xs);
-  font-weight: var(--w-bold);
-  letter-spacing: var(--track-label);
-  text-transform: uppercase;
-}
-.share-grid input,
-.share-result input {
-  min-width: 0;
-  width: 100%;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--bg);
-  color: var(--fg);
-  font: inherit;
-  font-size: var(--text-base);
-  font-weight: var(--w-regular);
-  letter-spacing: 0;
-  padding: 10px;
-  text-transform: none;
-}
-.share-grid input::placeholder {
-  color: var(--fg-label);
-}
-.share-status {
-  min-height: 20px;
-  margin-top: var(--space-8);
-  color: var(--fg-muted);
-  font-size: var(--text-sm);
-}
-.share-status.error {
-  color: var(--danger);
-}
-.share-result {
-  display: grid;
-  gap: var(--space-8);
-  margin-top: var(--space-8);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  background: var(--bg-elevated);
-  padding: var(--space-8);
-}
-.share-result[hidden] {
-  display: none;
-}
-.share-copy-row {
-  display: flex;
-  gap: var(--space-6);
-  min-width: 0;
-}
-.share-copy-row input {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-}
-.share-copy-btn {
-  flex: none;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--fg-muted);
-  font: inherit;
-  font-size: var(--text-xs);
-  font-weight: var(--w-bold);
-  padding: 0 10px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.share-copy-btn:hover {
-  color: var(--fg);
-  border-color: var(--border-strong);
-}
-.share-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--space-8);
-  margin-top: var(--space-12);
-}
-.share-cancel {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--fg-muted);
-  font-family: inherit;
-  font-size: var(--text-sm);
-  font-weight: var(--w-bold);
-  padding: 9px 14px;
-  cursor: pointer;
-}
-.share-cancel:hover {
-  color: var(--fg);
-  border-color: var(--border-strong);
-}
 .layout {
   height: calc(100vh - var(--bar-h));
   min-height: 0;
@@ -1058,6 +871,36 @@ body.lavish {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+.pill-attachments {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.pill-attachment {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  object-fit: cover;
+  background: var(--border);
+  border: 1px solid var(--border-strong);
+}
+.pill-attachment-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 4px;
+  border-radius: 5px;
+  background: var(--border);
+  border: 1px solid var(--border-strong);
+  color: var(--fg-muted);
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
 .pill-close {
   display: flex;
   align-items: center;
@@ -1243,22 +1086,15 @@ body.layout-gate-active iframe#artifact {
   .pill-preview {
     max-width: min(220px, 70vw);
   }
-  .share-overlay {
-    align-items: start;
-    padding: var(--space-8);
-  }
-  .share-copy-row {
-    flex-direction: column;
-  }
 }
 
-/* Whiteboard overlay: a full-viewport layer above the chrome hosting the
+/* Whiteboard overlay: fills the review surface below the dock while hosting the
    sandboxed Excalidraw frame. The frame owns all whiteboard UI; this layer
    only provides the backdrop, a fallback close control, and an error card
    for when the frame cannot boot. */
 .whiteboard-overlay {
   position: fixed;
-  inset: 0;
+  inset: var(--bar-h) 0 0 0;
   background: rgba(15, 17, 21, 0.92);
   z-index: 80;
   display: flex;
@@ -1320,7 +1156,7 @@ body.layout-gate-active iframe#artifact {
 }
 
 /* ============================================================================
- * LOCAL PATCH: light chrome, an overlaid review toolbar, and a collapsible side panel.
+ * LOCAL PATCH: light chrome, a compact review dock, and a collapsible side panel.
  *
  * Appended as one block at the end rather than edited into the rules above, so
  * an upstream rebase touching those rules does not conflict with this.
@@ -1355,27 +1191,27 @@ body.layout-gate-active iframe#artifact {
   --danger: #c0392b;
   --shadow-tooltip: 0 12px 32px rgba(15, 17, 21, 0.13);
   --shadow-floating: 0 18px 56px rgba(15, 17, 21, 0.15);
-  /* The review toolbar overlays the artifact instead of reserving a second header row. */
-  --bar-h: 0px;
+  --bar-h: 42px;
 }
 body.lavish {
   color-scheme: light;
 }
 .bar {
-  position: fixed;
-  right: 8px;
-  bottom: 8px;
+  position: relative;
+  inset: auto;
   z-index: 55;
-  width: max-content;
-  max-width: calc(100vw - 16px);
-  min-height: 42px;
+  width: 100%;
+  max-width: none;
+  min-height: var(--bar-h);
+  justify-content: flex-end;
   gap: 4px;
-  padding: 4px;
-  border: var(--hairline-subtle);
-  border-radius: var(--radius-lg);
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: var(--shadow-tooltip);
-  backdrop-filter: blur(12px);
+  padding: 4px 8px;
+  border: 0;
+  border-bottom: var(--hairline-subtle);
+  border-radius: 0;
+  background: var(--bg-bar);
+  box-shadow: none;
+  backdrop-filter: none;
 }
 .bar-controls {
   display: flex;
@@ -1384,6 +1220,10 @@ body.lavish {
   min-width: 0;
 }
 .bar-controls[hidden] {
+  display: none;
+}
+.narrow-menu-item,
+.narrow-menu-rule {
   display: none;
 }
 .bar-toggle {
@@ -1430,8 +1270,8 @@ body.lavish {
 }
 .warnings-drawer,
 .more-menu {
-  top: auto;
-  bottom: 42px;
+  top: 42px;
+  bottom: auto;
 }
 
 /* Rules that bypass the semantic layer and name palette entries directly. */
@@ -1454,6 +1294,11 @@ body.lavish {
 .menu-file:hover,
 .menu-item:hover:not(:disabled) {
   background: #eceff4;
+}
+.layout-issue-banner {
+  border-color: rgba(154, 111, 20, 0.35);
+  background: #fdf6e3;
+  color: var(--accent);
 }
 .menu {
   box-shadow: var(--shadow-floating);
@@ -1489,6 +1334,11 @@ body.lavish {
 body.panel-collapsed .layout {
   grid-template-columns: minmax(0, 1fr);
 }
+@media (max-width: 860px) {
+  body.panel-collapsed .layout {
+    grid-template-rows: minmax(0, 1fr);
+  }
+}
 body.panel-collapsed .panel {
   display: none;
 }
@@ -1499,13 +1349,12 @@ body.panel-collapsed .panel-toggle {
 
 @media (max-width: 640px) {
   .bar {
-    left: auto;
     gap: 6px;
-    padding: 4px;
+    padding: 4px 6px;
   }
   .warnings-drawer {
-    top: auto;
-    bottom: 56px;
+    top: calc(var(--bar-h) + 6px);
+    bottom: auto;
   }
 }
 
@@ -1578,5 +1427,20 @@ body.panel-collapsed .panel-toggle {
   }
   .end-session-button > span {
     display: none;
+  }
+}
+@media (max-width: 380px) {
+  .bar-controls {
+    gap: 4px;
+  }
+  .bar-controls > .panel-toggle,
+  .bar-controls > .end-session-button {
+    display: none;
+  }
+  .more-menu .narrow-menu-item {
+    display: flex;
+  }
+  .more-menu .narrow-menu-rule {
+    display: block;
   }
 }

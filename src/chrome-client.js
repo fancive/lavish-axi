@@ -12,6 +12,59 @@ const internalQueueKeyField = "_lavishQueueKey";
 const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initialChat : [];
 const MODE_TOGGLE_HOTKEY_KEY = String(sessionData.modeToggleHotkeyKey || "").toLowerCase();
 const END_SESSION_HOTKEY_KEY = String(sessionData.endSessionHotkeyKey || "").toLowerCase();
+const attachmentMaxBytes = Number(sessionData.attachmentMaxBytes) || 0;
+
+// The chrome is the only path from the sandboxed (opaque-origin) artifact iframe to
+// the loopback server, so it is the sole place a same-origin confused-deputy can be
+// mediated: the frame's postMessage source check proves a message came from the
+// artifact frame but NOT that a user gesture (paste/drop/pick) drove it, so hostile
+// artifact script could otherwise drive unbounded uploads. Bound both the rate and
+// the cumulative bytes per chrome session here; the server keeps a bounded disk
+// quota as the durable backstop.
+const UPLOAD_RATE_WINDOW_MS = 60_000;
+const UPLOAD_RATE_MAX = 30;
+const UPLOAD_SESSION_BYTE_QUOTA = 256 * 1024 * 1024; // 256 MiB per chrome session
+// The rate and cumulative-byte guards bound uploads over time, but not how many run
+// AT ONCE: each accepted message starts fetch() immediately, so a hostile artifact
+// could post ~30 large bodies in one tick and hold hundreds of MiB of structured
+// clones + server body buffers concurrently before the cumulative quota trips (D8).
+// Cap the number in flight; the over-cap ones are refused with a retry hint (like the
+// rate guard) and a freed slot admits the next.
+const UPLOAD_MAX_IN_FLIGHT = 4;
+const uploadTimestamps = [];
+let uploadedBytesTotal = 0;
+let uploadsInFlight = 0;
+
+function formatByteLimit(bytes) {
+  if (bytes >= 1024 * 1024) return Math.round(bytes / (1024 * 1024)) + " MB";
+  if (bytes >= 1024) return Math.round(bytes / 1024) + " KB";
+  return bytes + " bytes";
+}
+
+// Turn the server's atomic-reject detail (C4) into one human line naming the cap
+// that was hit, so the user knows what to fix. Nothing was delivered - the queue is
+// preserved - so the wording is about correcting, not about a partial send.
+function describeAttachmentRejection(rejected, caps) {
+  const reasons = new Set(rejected.map((ref) => ref && ref.reason));
+  const parts = [];
+  if (reasons.has("prompt-bytes-exceeded") && caps && caps.maxPromptBytes) {
+    parts.push("images exceed the " + formatByteLimit(caps.maxPromptBytes) + " per-annotation limit");
+  }
+  if (reasons.has("too-many") && caps && caps.maxPerPrompt) {
+    parts.push("more than " + caps.maxPerPrompt + " images on one annotation");
+  }
+  if (reasons.has("too-many-in-request")) {
+    parts.push("too many images queued at once");
+  }
+  if (reasons.has("malformed")) {
+    parts.push("an image attachment was malformed");
+  }
+  if (reasons.has("not-found")) {
+    parts.push("an image is no longer available");
+  }
+  const detail = parts.length ? parts.join("; ") : "some attachments could not be delivered";
+  return "Not sent — " + detail + ". Remove or fix the image, then send again.";
+}
 
 function isModeToggleHotkeyEvent(event) {
   if (event.shiftKey || event.altKey) return false;
@@ -19,7 +72,7 @@ function isModeToggleHotkeyEvent(event) {
 }
 
 function isEndSessionHotkeyEvent(event) {
-  if (!event.shiftKey || event.altKey) return false;
+  if (event.isComposing || !event.shiftKey || event.altKey) return false;
   return Boolean(event.metaKey || event.ctrlKey) && String(event.key || "").toLowerCase() === END_SESSION_HOTKEY_KEY;
 }
 
@@ -41,7 +94,7 @@ function isPanelToggleHotkeyEvent(event) {
 }
 
 function isSendHotkeyEvent(event) {
-  if (event.shiftKey || event.altKey) return false;
+  if (event.isComposing || event.shiftKey || event.altKey) return false;
   return Boolean(event.metaKey || event.ctrlKey) && (event.key === "Enter" || event.code === "Enter");
 }
 
@@ -64,19 +117,9 @@ const moreMenu = /** @type {HTMLDivElement} */ (document.getElementById("moreMen
 const reloadArtifactButton = /** @type {HTMLButtonElement} */ (document.getElementById("reloadArtifact"));
 const copySnapshotButton = /** @type {HTMLButtonElement} */ (document.getElementById("copySnapshot"));
 const exportArtifactButton = /** @type {HTMLButtonElement} */ (document.getElementById("exportArtifact"));
-const shareArtifactButton = /** @type {HTMLButtonElement} */ (document.getElementById("shareArtifact"));
-const shareDialog = /** @type {HTMLDivElement} */ (document.getElementById("shareDialog"));
-const shareForm = /** @type {HTMLFormElement} */ (document.getElementById("shareForm"));
-const shareCloseButton = /** @type {HTMLButtonElement} */ (document.getElementById("shareClose"));
-const shareCancelButton = /** @type {HTMLButtonElement} */ (document.getElementById("shareCancel"));
-const sharePublishButton = /** @type {HTMLButtonElement} */ (document.getElementById("sharePublish"));
-const sharePasswordInput = /** @type {HTMLInputElement} */ (document.getElementById("sharePassword"));
-const shareStatus = /** @type {HTMLDivElement} */ (document.getElementById("shareStatus"));
-const shareResult = /** @type {HTMLDivElement} */ (document.getElementById("shareResult"));
-const shareUrlInput = /** @type {HTMLInputElement} */ (document.getElementById("shareUrl"));
-const shareUpdateKeyInput = /** @type {HTMLInputElement} */ (document.getElementById("shareUpdateKey"));
-const copyShareUrlButton = /** @type {HTMLButtonElement} */ (document.getElementById("copyShareUrl"));
-const copyUpdateKeyButton = /** @type {HTMLButtonElement} */ (document.getElementById("copyUpdateKey"));
+const menuPanelToggleButton = /** @type {HTMLButtonElement} */ (document.getElementById("menuPanelToggle"));
+const menuPanelToggleText = /** @type {HTMLSpanElement} */ (document.getElementById("menuPanelToggleText"));
+const menuEndButton = /** @type {HTMLButtonElement} */ (document.getElementById("menuEnd"));
 const endButton = /** @type {HTMLButtonElement} */ (document.getElementById("end"));
 const copyPathButton = /** @type {HTMLButtonElement} */ (document.getElementById("copyPath"));
 const copyHint = /** @type {HTMLSpanElement} */ (document.getElementById("copyHint"));
@@ -198,10 +241,49 @@ function saveJsonState(storageKey, value) {
   }
 }
 
+// A queued prompt is authored by the untrusted artifact iframe, so its attachment
+// refs are validated at the single boundary every prompt crosses before it is
+// persisted or rendered. Anything that is not a well-formed `{id}` object is
+// dropped: the queue is written to sessionStorage BEFORE it renders, so one bad
+// entry would throw out of render(), stay on disk, and throw again on every
+// reload - wedging the tab permanently instead of failing once. The card's own
+// flow only ever produces `{id, name}`, so a malformed entry is fabricated and
+// there is no user image to preserve. The server re-validates independently.
+// Each surviving ref is PROJECTED onto a fresh primitives-only object rather than
+// kept by reference: postMessage delivers a structured clone, which faithfully
+// preserves BigInt values and cycles that `JSON.stringify` then refuses. Passing
+// the artifact's own object through would carry that junk into sessionStorage and
+// the POST body, where the throw makes the queue unsendable - the same wedge as a
+// poisoned entry, just one step later.
+function sanitizeAttachmentRefs(value) {
+  if (!Array.isArray(value)) return [];
+  const refs = [];
+  for (const ref of value) {
+    if (!ref || typeof ref !== "object" || Array.isArray(ref)) continue;
+    if (typeof ref.id !== "string" || !ref.id) continue;
+    const projected = { id: ref.id };
+    if (typeof ref.name === "string" && ref.name) projected.name = ref.name;
+    refs.push(projected);
+  }
+  return refs;
+}
+
+function sanitizeQueuedPrompt(prompt) {
+  if (!prompt || typeof prompt !== "object") return null;
+  if (!("attachments" in prompt)) return prompt;
+  const clean = { ...prompt };
+  const refs = sanitizeAttachmentRefs(clean.attachments);
+  if (refs.length) clean.attachments = refs;
+  else delete clean.attachments;
+  return clean;
+}
+
 function loadQueuedPrompts() {
   try {
     const parsed = JSON.parse(sessionStorage.getItem(queueStorageKey) || "[]");
-    return Array.isArray(parsed) ? parsed.filter((prompt) => prompt && typeof prompt === "object") : [];
+    // Also sanitize on restore: a tab poisoned before this guard existed still has
+    // the bad prompt on disk and would otherwise stay wedged after an upgrade.
+    return Array.isArray(parsed) ? parsed.map(sanitizeQueuedPrompt).filter(Boolean) : [];
   } catch {
     return [];
   }
@@ -224,8 +306,10 @@ function render() {
     .map(
       (prompt, index) =>
         '<div class="pill-wrap"><div class="pill"><span class="pill-preview">' +
-        escapeHtml(prompt.prompt) +
-        '</span><button class="pill-close" type="button" aria-label="Remove queued prompt" data-index="' +
+        escapeHtml(prompt.prompt || (attachmentCount(prompt) ? "Image annotation" : "")) +
+        "</span>" +
+        pillAttachmentsHtml(prompt) +
+        '<button class="pill-close" type="button" aria-label="Remove queued prompt" data-index="' +
         index +
         '"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div><div class="pill-tooltip">' +
         (prompt.selector
@@ -253,12 +337,65 @@ function updateSendState() {
   if (warningsQueueButton) updateWarningSelectionState();
 }
 
-function showSendHint() {
+function attachmentCount(prompt) {
+  return Array.isArray(prompt.attachments) ? prompt.attachments.length : 0;
+}
+
+// How many thumbnails the compact pill shows before the rest collapse into a badge.
+const PILL_THUMBNAIL_LIMIT = 4;
+
+// Thumbnails for a queued prompt's images, served straight from the same-origin
+// attachment endpoint (the ids are already server-vetted at upload time). The pill
+// has room for only a few, but the per-prompt cap is configurable
+// (LAVISH_AXI_MAX_ATTACHMENTS_PER_PROMPT), so a prompt can legitimately carry more
+// than fit: the remainder collapses into a +N badge rather than being dropped from
+// the preview, which would make the queue look like it lost the extra images (W-A).
+function pillAttachmentsHtml(prompt) {
+  const count = attachmentCount(prompt);
+  if (!count) return "";
+  const hidden = count - PILL_THUMBNAIL_LIMIT;
+  return (
+    '<span class="pill-attachments">' +
+    prompt.attachments
+      .slice(0, PILL_THUMBNAIL_LIMIT)
+      .map((attachment) => {
+        const alt = escapeHtml(attachment.name || "image");
+        return (
+          '<img class="pill-attachment" src="/api/' +
+          encodeURIComponent(key) +
+          "/attachments/" +
+          encodeURIComponent(attachment.id) +
+          '" alt="' +
+          alt +
+          '" title="' +
+          alt +
+          '">'
+        );
+      })
+      .join("") +
+    (hidden > 0
+      ? '<span class="pill-attachment-more" title="' +
+        hidden +
+        " more image" +
+        (hidden === 1 ? "" : "s") +
+        '">+' +
+        hidden +
+        "</span>"
+      : "") +
+    "</span>"
+  );
+}
+
+const DEFAULT_SEND_HINT = "Write a message or annotate an element first.";
+
+function showSendHint(message = DEFAULT_SEND_HINT, holdMs = 2600) {
+  sendHint.textContent = message;
   sendHint.hidden = false;
   clearTimeout(sendHintTimer);
   sendHintTimer = setTimeout(() => {
     sendHint.hidden = true;
-  }, 2600);
+    sendHint.textContent = DEFAULT_SEND_HINT;
+  }, holdMs);
   chatInput.focus();
 }
 
@@ -388,8 +525,9 @@ function promptQueueKey(prompt) {
   return prompt && typeof prompt[internalQueueKeyField] === "string" ? prompt[internalQueueKeyField].trim() : "";
 }
 
-function enqueuePrompt(prompt) {
-  if (!prompt || typeof prompt !== "object") return;
+function enqueuePrompt(rawPrompt) {
+  const prompt = sanitizeQueuedPrompt(rawPrompt);
+  if (!prompt) return;
 
   const queueKey = promptQueueKey(prompt);
   if (queueKey) {
@@ -490,6 +628,15 @@ async function submitQueuedOnce() {
       if (Array.isArray(data?.warnings)) setLayoutWarnings(data.warnings);
       endAfterSubmit = false;
       return false;
+    }
+    // C4: the server persisted nothing (atomic reject) - the queue below is left
+    // intact because the splice only runs on success. Surface exactly what failed
+    // so the user can fix the offending attachment(s) rather than losing them.
+    if (response.status === 400) {
+      const detail = await response.json().catch(() => ({}));
+      if (Array.isArray(detail.rejected) && detail.rejected.length) {
+        showSendHint(describeAttachmentRejection(detail.rejected, detail.caps), 6000);
+      }
     }
     throw new Error("failed to submit queued prompts");
   }
@@ -962,6 +1109,7 @@ function markSessionEnded() {
   annotationSwitch.disabled = true;
   moreButton.disabled = true;
   endButton.disabled = true;
+  menuEndButton.disabled = true;
   chatInput.disabled = true;
   updateSendState();
   if (presenceBanner) presenceBanner.hidden = true;
@@ -1043,70 +1191,6 @@ async function exportArtifact() {
     setExportLabel("Export failed - retry");
   } finally {
     exportArtifactButton.disabled = false;
-  }
-}
-
-function openShareDialog() {
-  closeMenus();
-  shareDialog.hidden = false;
-  shareStatus.textContent = "";
-  shareStatus.classList.remove("error");
-  shareResult.hidden = true;
-  sharePasswordInput.value = "";
-  sharePasswordInput.focus();
-}
-
-function closeShareDialog() {
-  shareDialog.hidden = true;
-}
-
-async function copyToButton(value, button, label) {
-  await copyText(value);
-  button.textContent = "Copied";
-  setTimeout(() => {
-    button.textContent = label;
-  }, 1200);
-}
-
-async function publishShare(event) {
-  event.preventDefault();
-  sharePublishButton.disabled = true;
-  shareStatus.classList.remove("error");
-  shareStatus.textContent = "Publishing to ht-ml.app...";
-  shareResult.hidden = true;
-  const password = sharePasswordInput.value.trim();
-  const passwordProtected = Boolean(password);
-  try {
-    const response = await fetch("/api/" + key + "/share", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(password ? { password } : {}),
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "publish failed");
-    shareUrlInput.value = data.url || "";
-    shareUpdateKeyInput.value = data.update_key || "";
-    const unresolvedAssets = Array.isArray(data.unresolved_local_assets) ? data.unresolved_local_assets : [];
-    const notices = Array.isArray(data.notices) ? data.notices : [];
-    const warningCount = unresolvedAssets.length;
-    const noticeCount = notices.length;
-    const noticeSummary = noticeCount ? noticeText(noticeCount) : "";
-    shareStatus.textContent =
-      warningCount > 0
-        ? `Published with ${warningCount === 1 ? "1 unresolved local asset" : `${warningCount} unresolved local assets`}${noticeSummary ? ` and ${noticeSummary}` : ""}.${passwordProtected ? " This page is PASSWORD-PROTECTED; viewers also need the password." : ""}`
-        : noticeCount > 0
-          ? `Published with ${noticeSummary}.${passwordProtected ? " This page is PASSWORD-PROTECTED; viewers also need the password." : ""}`
-          : passwordProtected
-            ? "Published. This page is PASSWORD-PROTECTED; viewers also need the password."
-            : "Published. Anyone with the link can view this page.";
-    shareResult.hidden = false;
-    shareUrlInput.focus();
-    shareUrlInput.select();
-  } catch (error) {
-    shareStatus.classList.add("error");
-    shareStatus.textContent = error instanceof Error ? error.message : String(error);
-  } finally {
-    sharePublishButton.disabled = false;
   }
 }
 
@@ -1334,7 +1418,8 @@ function showWhiteboardOverlay(index) {
   postToFrame({ type: "lavish:suspendWhiteboard", diagramIndex: index });
   // A fresh document per open: the frame boots, posts ready, and receives its
   // init - no stale editor state can leak between opens.
-  whiteboardFrame.src = "/whiteboard-frame?diagramIndex=" + encodeURIComponent(String(index));
+  whiteboardFrame.src =
+    "/whiteboard-frame?diagramIndex=" + encodeURIComponent(String(index)) + "&key=" + encodeURIComponent(key);
 }
 
 function finishWhiteboardClose(index) {
@@ -1609,15 +1694,36 @@ function handleAuthenticatedWhiteboardMessage(index, message, mode) {
   if (message.type === "lavish-whiteboard:queueFeedback") queueWhiteboardFeedback(index, message, mode);
   if (message.type === "lavish-whiteboard:maximize" && mode === "inline") openWhiteboardOverlay(index);
   if (message.type === "lavish-whiteboard:close" && mode === "overlay") closeWhiteboard();
+  if (message.type === "lavish-whiteboard:endSession" && mode === "overlay") endSession();
   if (message.type === "lavish-whiteboard:teardownReady") finishWhiteboardTeardown(index, message, mode);
   if (message.type === "lavish-whiteboard:teardownFailed") failWhiteboardTeardown(index, message, mode);
   if (message.type === "lavish-whiteboard:flushComplete") finishWhiteboardFlush(index, message, mode);
 }
 
+// Inline whiteboard frames are created by the SDK inside the artifact document,
+// so a genuine one is always a direct child of the *current* artifact window.
+// Descent - not the channel token - is what proves the sender is ours: the
+// frame page is framable by any origin, so a token is not a secret an attacker
+// cannot obtain. Without this, any window that could postMessage to this chrome
+// (a page that framed it, or one holding a window.open handle) could open a
+// channel and queue a fabricated prompt. Mirrors the artifact-message handler's
+// `event.source !== frame.contentWindow` guard.
+function isArtifactChildWindow(source) {
+  if (!source) return false;
+  try {
+    // Reading `parent` on a cross-origin WindowProxy is permitted; the frame's
+    // sandbox makes everything else about it opaque.
+    return source.parent === frame.contentWindow;
+  } catch {
+    return false;
+  }
+}
+
 function handleInlineWhiteboardMessage(event, message) {
   if (ended) return;
+  if (!isArtifactChildWindow(event.source)) return;
   const index = validWhiteboardIndex(message.diagramIndex);
-  if (index === null || !event.source) return;
+  if (index === null) return;
   if (message.type === "lavish-whiteboard:ready") {
     if (inlineWhiteboardChannels.has(index)) return;
     const channelId = String(message.channelToken || "");
@@ -1777,10 +1883,141 @@ window.addEventListener("message", (event) => {
       messageToken,
     ).catch(() => {});
   }
+  if (msg.type === "lavish:uploadAttachment") uploadAttachment(msg);
+  // There is deliberately no attachment-delete message. See removeAttachment's
+  // removal note below: the iframe cannot be trusted to decide a delete, and the
+  // chrome cannot see every live reference, so reclamation is the sweeper's job.
   if (msg.type === "lavish:sendQueuedPrompts") sendQueued();
   if (msg.type === "lavish:endSession") endSession();
   if (msg.type === "lavish:toggleAnnotationMode") toggleAnnotationMode();
+  if (msg.type === "lavish:togglePanel") {
+    setPanelCollapsed(!document.body.classList.contains("panel-collapsed"));
+  }
 });
+
+// The sandboxed artifact iframe can't reach the loopback server (opaque origin),
+// so it hands captured image bytes here and the chrome performs the same-origin
+// upload, then reports the server-vetted id back to the card.
+async function uploadAttachment(message) {
+  const localId = String(message.localId || "");
+  if (!localId) return;
+  // Echoed verbatim on every result so the artifact can tell a reply to ITS upload
+  // from one still in flight for a previous document (E1). The chrome never
+  // interprets it; it only round-trips it.
+  const nonce = message.nonce;
+  const bytes = message.bytes;
+  let size;
+  if (ArrayBuffer.isView(bytes)) {
+    size = bytes.byteLength;
+  } else {
+    try {
+      const byteLengthGetter = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength")?.get;
+      size = byteLengthGetter ? byteLengthGetter.call(bytes) : NaN;
+    } catch {
+      size = NaN;
+    }
+  }
+  if (!Number.isFinite(size) || size < 0) {
+    postToFrame({
+      type: "lavish:attachmentResult",
+      nonce,
+      localId,
+      ok: false,
+      error: "invalid upload payload",
+    });
+    return;
+  }
+  // Reject over-cap images before they hit the network: an over-cap upload aborts
+  // mid-stream, and the browser can hang or reset instead of surfacing the 413, so
+  // the chip would never leave "uploading". Catching it here guarantees the card
+  // reaches its error+retry state. The server still enforces the cap authoritatively.
+  if (attachmentMaxBytes > 0 && size > attachmentMaxBytes) {
+    postToFrame({
+      type: "lavish:attachmentResult",
+      nonce,
+      localId,
+      ok: false,
+      error: "Image is larger than the " + formatByteLimit(attachmentMaxBytes) + " limit",
+    });
+    return;
+  }
+  // Confused-deputy guard: rate + cumulative-byte ceiling before touching the network.
+  const now = Date.now();
+  while (uploadTimestamps.length && now - uploadTimestamps[0] > UPLOAD_RATE_WINDOW_MS) uploadTimestamps.shift();
+  if (uploadTimestamps.length >= UPLOAD_RATE_MAX) {
+    postToFrame({
+      type: "lavish:attachmentResult",
+      nonce,
+      localId,
+      ok: false,
+      error: "Too many uploads. Wait a moment and retry.",
+    });
+    return;
+  }
+  if (uploadedBytesTotal + size > UPLOAD_SESSION_BYTE_QUOTA) {
+    postToFrame({
+      type: "lavish:attachmentResult",
+      nonce,
+      localId,
+      ok: false,
+      error: "Upload limit reached for this session (" + formatByteLimit(UPLOAD_SESSION_BYTE_QUOTA) + ").",
+    });
+    return;
+  }
+  // In-flight ceiling: refuse rather than pile another large body onto the network
+  // while the bound is full. The card keeps its retry affordance, and a settled
+  // upload (below) frees a slot for the next.
+  if (uploadsInFlight >= UPLOAD_MAX_IN_FLIGHT) {
+    postToFrame({
+      type: "lavish:attachmentResult",
+      nonce,
+      localId,
+      ok: false,
+      error: "Too many uploads in flight. Wait a moment and retry.",
+    });
+    return;
+  }
+  uploadTimestamps.push(now);
+  uploadedBytesTotal += size;
+  uploadsInFlight += 1;
+  try {
+    const response = await fetch("/api/" + key + "/attachments", {
+      method: "POST",
+      headers: { "content-type": String(message.mime || "application/octet-stream") },
+      body: bytes,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || "Upload failed");
+    postToFrame({
+      type: "lavish:attachmentResult",
+      nonce,
+      localId,
+      ok: true,
+      id: (data.attachment && data.attachment.id) || "",
+    });
+  } catch (error) {
+    postToFrame({
+      type: "lavish:attachmentResult",
+      nonce,
+      localId,
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    uploadsInFlight -= 1;
+  }
+}
+
+// There is intentionally no eager attachment delete here. Removing a chip used to
+// ask the chrome to DELETE the stored file once no queued prompt referenced it,
+// but that check is not authoritative: attachments are content-addressed, so two
+// tabs (or two cards) can hold the SAME id, and a chip that is ready but not yet
+// queued in another tab is invisible from here. The delete was also driven by the
+// untrusted iframe, making the chrome a confused deputy - a malicious artifact
+// could destroy bytes a live card still needed, which then failed as `not-found`
+// on send. Unreferenced files are reclaimed by the server's reference-aware TTL
+// sweeper and the disk-cap backstop, which see every session's pending prompts
+// at once. Deleting late is cheap; deleting bytes someone still needs is not.
 
 loadFrame();
 
@@ -1798,7 +2035,10 @@ annotationSwitch.onclick = toggleAnnotationMode;
 function setPanelCollapsed(collapsed) {
   document.body.classList.toggle("panel-collapsed", collapsed);
   panelToggle.setAttribute("aria-pressed", String(collapsed));
-  panelToggle.setAttribute("aria-label", collapsed ? "Show conversation panel" : "Collapse conversation panel");
+  const action = collapsed ? "Show conversation panel" : "Collapse conversation panel";
+  panelToggle.setAttribute("aria-label", action);
+  panelToggle.title = action + " · ⌘\\ / Ctrl+\\";
+  menuPanelToggleText.textContent = action;
   try {
     if (collapsed) window.localStorage.setItem(panelCollapsedStorageKey, "1");
     else window.localStorage.removeItem(panelCollapsedStorageKey);
@@ -1817,8 +2057,7 @@ function restorePanelCollapsed() {
   setPanelCollapsed(collapsed);
 }
 
-// LOCAL ADDITION: the review chrome no longer owns a full-width header. Keep its bottom-right
-// dock collapsed by default so it cannot obscure the artifact being reviewed; warnings remain
+// LOCAL ADDITION: keep low-frequency review controls collapsed by default; warnings remain
 // visible as a badge on the dock entrypoint.
 function setBarExpanded(expanded) {
   barExpanded = Boolean(expanded) && !ended;
@@ -1865,21 +2104,20 @@ chatInput.addEventListener("keydown", (event) => {
   }
 });
 panelToggle.onclick = () => setPanelCollapsed(!document.body.classList.contains("panel-collapsed"));
+menuPanelToggleButton.onclick = () => {
+  closeMenus();
+  setPanelCollapsed(!document.body.classList.contains("panel-collapsed"));
+};
 chatInput.addEventListener("input", hideSendHint);
 copyPathButton.onclick = copyFilePath;
 reloadArtifactButton.onclick = reloadArtifact;
 copySnapshotButton.onclick = copyDomSnapshot;
 exportArtifactButton.onclick = exportArtifact;
-shareArtifactButton.onclick = openShareDialog;
-shareCloseButton.onclick = closeShareDialog;
-shareCancelButton.onclick = closeShareDialog;
-shareForm.addEventListener("submit", publishShare);
-shareDialog.addEventListener("click", (event) => {
-  if (event.target === shareDialog) closeShareDialog();
-});
-copyShareUrlButton.onclick = () => copyToButton(shareUrlInput.value, copyShareUrlButton, "Copy URL");
-copyUpdateKeyButton.onclick = () => copyToButton(shareUpdateKeyInput.value, copyUpdateKeyButton, "Copy key");
 endButton.onclick = () => {
+  closeMenus();
+  endSession();
+};
+menuEndButton.onclick = () => {
   closeMenus();
   endSession();
 };
@@ -1901,8 +2139,6 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     if (!whiteboardOverlay.hidden) {
       closeWhiteboard();
-    } else if (!shareDialog.hidden) {
-      closeShareDialog();
     } else if (warningsDrawerOpen) {
       closeWarningsDrawer({ restoreFocus: true });
     } else if (!moreMenu.hidden) {
@@ -1958,8 +2194,8 @@ document.addEventListener(
 // handles the keys itself and forwards the intent over the same postMessage channel
 // that already carries lavish:restoreScroll.
 //
-// Not in the capture phase, and never while typing: a paging key inside a textarea
-// or the conversation panel belongs to whatever is focused there.
+// Not in the capture phase, and never while typing or navigating chrome-owned
+// scroll/popover UI: those keys belong to whatever is focused there.
 const ARTIFACT_SCROLL_KEYS = new Set(["PageDown", "PageUp", "Home", "End"]);
 
 function isTypingTarget(target) {
@@ -1971,15 +2207,22 @@ function isTypingTarget(target) {
 // Duck-typed like isTypingTarget: event.target is an EventTarget, and narrowing it to a
 // Node needs either a global this file's eslint config does not declare or a cast tsc
 // then rejects. An untyped parameter satisfies both.
-function isInsideConversationPanel(target) {
-  return Boolean(target && typeof target.nodeType === "number" && panelScroll.contains(target));
+function isInsideChromeNavigationRegion(target) {
+  return Boolean(
+    target &&
+    typeof target.nodeType === "number" &&
+    (panelScroll.contains(target) ||
+      (warningsDrawerOpen && warningsDrawer.contains(target)) ||
+      (!moreMenu.hidden && moreMenu.contains(target)) ||
+      (!whiteboardOverlay.hidden && whiteboardOverlay.contains(target))),
+  );
 }
 
 document.addEventListener("keydown", (event) => {
   if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
   if (!ARTIFACT_SCROLL_KEYS.has(event.key)) return;
   if (isTypingTarget(event.target)) return;
-  if (isInsideConversationPanel(event.target)) return;
+  if (isInsideChromeNavigationRegion(event.target)) return;
   event.preventDefault();
   postToFrame({ type: "lavish:scrollKey", key: event.key });
 });

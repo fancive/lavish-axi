@@ -5,7 +5,7 @@
 // where the artifact SDK embeds one frame in place of each rendered Mermaid
 // diagram; and overlay,
 // where the chrome hosts one frame full-viewport (reached from the inline
-// frame's fullscreen action). The `mode` field of the init message selects the
+// preview). The `mode` field of the init message selects the
 // placement-specific UI; everything else is identical. Bundled by
 // `scripts/build.js` (esbuild) together with Excalidraw, the Mermaid
 // converter, its own exactly-pinned mermaid, and React into
@@ -28,17 +28,23 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import "@excalidraw/excalidraw/index.css";
 import "./whiteboard-frame.css";
+import { createWhiteboardEndSessionHotkeyHandler } from "./whiteboard-hotkeys.js";
 
 import {
+  CLEAN_FONT_FAMILY,
+  CLEAN_ROUGHNESS,
   convertExcalidrawSkeletonsAfterFontsLoad,
   createWhiteboardPersistencePayload,
+  finalizeMermaidScene,
   findDuplicateElementIds,
   repairSavedSceneTextMetrics,
+  restoreMermaidLabelLineBreaks,
   sanitizeSceneLink,
   sanitizeWhiteboardAppState,
   sceneIsImageFallback,
   summarizeSceneEdits,
   WHITEBOARD_TEXT_METRICS_VERSION,
+  whiteboardModeStaysLocked,
 } from "./whiteboard-core.js";
 
 const SAVE_DEBOUNCE_MS = 800;
@@ -63,8 +69,7 @@ const state = {
   teardownFlushId: "",
   flushIds: new Set(),
   queueBusy: false,
-  // Inline frames boot locked (view mode) so a page full of embedded
-  // whiteboards scrolls normally; the first click on the canvas unlocks it.
+  // Inline frames stay locked so a page full of embedded whiteboards scrolls normally.
   setLocked: null,
 };
 
@@ -165,6 +170,14 @@ function buildShell(theme, mode) {
       queueButton.click();
     }
   });
+  document.addEventListener(
+    "keydown",
+    createWhiteboardEndSessionHotkeyHandler(
+      () => state.mode,
+      (message) => post(message),
+    ),
+    true,
+  );
   // LOCAL ADDITION: Escape leaves the fullscreen whiteboard.
   //
   // The chrome already closes the overlay on Escape, but only when the key reaches the
@@ -291,7 +304,7 @@ function handleSaveResult(message) {
       post({ type: "lavish-whiteboard:teardownReady", flushId });
       return;
     }
-    state.setLocked?.(false);
+    state.setLocked?.(whiteboardModeStaysLocked(state.mode));
     const error = String(message.error || "failed to save whiteboard scene");
     showStatus(`Could not save before closing: ${error}`, { transient: false });
     post({ type: "lavish-whiteboard:teardownFailed", flushId, error });
@@ -347,7 +360,7 @@ function onLinkOpen(element, event) {
 // to fullscreen, which is the only editable mode. Escape leaves fullscreen - see the
 // handler further down.
 function activateInlineWhiteboard(setLocked) {
-  if (state.mode === "inline") {
+  if (whiteboardModeStaysLocked(state.mode)) {
     post({ type: "lavish-whiteboard:maximize", diagramIndex: state.diagramIndex });
     return;
   }
@@ -418,7 +431,7 @@ function mountEditor({ elements, appState, files, theme }) {
       appState,
       files,
       theme,
-      startLocked: state.mode === "inline",
+      startLocked: whiteboardModeStaysLocked(state.mode),
     }),
   );
 }
@@ -464,9 +477,10 @@ async function loadSceneFonts(elements, files) {
 }
 
 async function convertSource(source) {
-  const { elements: skeletons, files } = await parseMermaidToExcalidraw(source, {
+  const { elements: parsedSkeletons, files } = await parseMermaidToExcalidraw(source, {
     themeVariables: { fontSize: "16px" },
   });
+  const skeletons = restoreMermaidLabelLineBreaks(parsedSkeletons);
   const materialize = (input) => {
     // Preserve Mermaid node/edge identity for edit summaries; regenerate only
     // when upstream emitted colliding ids (parallel edges), where uniqueness
@@ -477,14 +491,22 @@ async function convertSource(source) {
     }
     return elements;
   };
-  const elements = await convertExcalidrawSkeletonsAfterFontsLoad(skeletons, {
-    convert: materialize,
-    loadFonts: async (fallbackElements) => {
-      await loadSceneFonts(fallbackElements, files);
+  const elements = await finalizeMermaidScene(
+    await convertExcalidrawSkeletonsAfterFontsLoad(skeletons, {
+      convert: materialize,
+      loadFonts: async (fallbackElements) => {
+        await loadSceneFonts(fallbackElements, files);
+      },
+    }),
+    {
+      loadFonts: async (styledElements) => {
+        await loadSceneFonts(styledElements, files);
+      },
+      measure: measureSceneText,
     },
-  });
+  );
   return {
-    elements: applyCleanStyle(elements),
+    elements,
     files: files || {},
     imageFallback: sceneIsImageFallback(elements),
   };
@@ -500,17 +522,6 @@ async function convertSource(source) {
 //   fontFamily  1 = Virgil/handwritten (default), 2 = Helvetica, 3 = Cascadia
 //
 // The user can still switch any element back from the Excalidraw toolbar.
-const CLEAN_ROUGHNESS = 0;
-const CLEAN_FONT_FAMILY = 2;
-
-function applyCleanStyle(elements) {
-  return elements.map((element) => {
-    const clean = { ...element, roughness: CLEAN_ROUGHNESS };
-    if (element.type === "text") clean.fontFamily = CLEAN_FONT_FAMILY;
-    return clean;
-  });
-}
-
 // Theme is passed only through the <Excalidraw theme> prop - putting it in
 // appState as well double-applies the dark-mode invert filter and washes the
 // canvas out. The background stays a light paper color in both themes; dark

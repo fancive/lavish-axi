@@ -155,6 +155,46 @@ test(
       assert.equal(detected.loads, 0, "detection alone never refreshes the artifact");
       assert.equal(detected.pills, 0, "detection alone never queues feedback");
 
+      const collapsedDock = evaluate(
+        '(() => { const dock = document.getElementById("reviewDock"); const dockBox = dock.getBoundingClientRect(); const annotationBox = document.getElementById("annotation").getBoundingClientRect(); const layoutBox = document.querySelector(".layout").getBoundingClientRect(); const artifactBox = document.getElementById("artifact").getBoundingClientRect(); const sendBox = document.getElementById("sendActions").getBoundingClientRect(); const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top; return JSON.stringify({' +
+          " position: getComputedStyle(dock).position," +
+          " dockTop: Math.round(dockBox.top), dockBottom: Math.round(dockBox.bottom), dockHeight: Math.round(dockBox.height)," +
+          ' controlsHidden: document.getElementById("barControls").hidden,' +
+          ' annotationVisible: getComputedStyle(document.getElementById("annotation")).display !== "none" && annotationBox.width > 0,' +
+          ' brandedHeader: Boolean(document.querySelector(".brand,.brand-mark,.brand-support")),' +
+          " overlapsArtifact: overlaps(dockBox, artifactBox), overlapsSend: overlaps(dockBox, sendBox)," +
+          " layoutTop: Math.round(layoutBox.top), layoutBottom: Math.round(window.innerHeight - layoutBox.bottom)," +
+          "}); })()",
+      );
+      assert.equal(collapsedDock.position, "relative");
+      assert.equal(collapsedDock.dockTop, 0);
+      assert.ok(collapsedDock.dockHeight <= 42);
+      assert.equal(collapsedDock.controlsHidden, true);
+      assert.equal(collapsedDock.annotationVisible, true);
+      assert.equal(collapsedDock.brandedHeader, false);
+      assert.equal(collapsedDock.layoutTop, collapsedDock.dockBottom);
+      assert.equal(collapsedDock.layoutBottom, 0);
+      assert.equal(collapsedDock.overlapsArtifact, false);
+      assert.equal(collapsedDock.overlapsSend, false);
+
+      const expandedDock = evaluate(
+        '(() => { document.getElementById("barToggle").click(); const controls = document.getElementById("barControls"); const dock = document.getElementById("reviewDock"); const dockBox = dock.getBoundingClientRect(); const artifactBox = document.getElementById("artifact").getBoundingClientRect(); const sendBox = document.getElementById("sendActions").getBoundingClientRect(); const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top; return JSON.stringify({' +
+          " controlsDisplay: getComputedStyle(controls).display," +
+          " controlsAlignment: getComputedStyle(controls).alignItems," +
+          ' expanded: document.getElementById("barToggle").getAttribute("aria-expanded"),' +
+          " dockHeight: Math.round(dock.getBoundingClientRect().height)," +
+          " overlapsArtifact: overlaps(dockBox, artifactBox), overlapsSend: overlaps(dockBox, sendBox)," +
+          ' endVisible: getComputedStyle(document.getElementById("end")).display !== "none",' +
+          "}); })()",
+      );
+      assert.equal(expandedDock.controlsDisplay, "flex");
+      assert.equal(expandedDock.controlsAlignment, "center");
+      assert.equal(expandedDock.expanded, "true");
+      assert.ok(expandedDock.dockHeight <= 50, "expanded controls remain a compact dock");
+      assert.equal(expandedDock.overlapsArtifact, false);
+      assert.equal(expandedDock.overlapsSend, false);
+      assert.equal(expandedDock.endVisible, true);
+
       openArtifact(artifact);
       await writeFile(artifact, `${await readFile(artifact, "utf8")}\n<!-- reopened -->`);
       wait(4500);
@@ -222,6 +262,21 @@ test(
       run("chrome-devtools-axi", ["emulate", "--viewport", "420x900x1,mobile,touch"], chromeEnv);
       wait(3500);
       instrumentArtifactLoads();
+      const collapsedPanel = evaluate(
+        '(() => { document.getElementById("barToggle").click(); document.getElementById("panelToggle").click(); const dock = document.getElementById("reviewDock"); const layout = document.querySelector(".layout"); const frame = document.querySelector(".frame"); return JSON.stringify({' +
+          " rows: getComputedStyle(layout).gridTemplateRows," +
+          ' panelDisplay: getComputedStyle(document.querySelector(".panel")).display,' +
+          " dockHeight: Math.round(dock.getBoundingClientRect().height)," +
+          " layoutHeight: Math.round(layout.getBoundingClientRect().height)," +
+          " frameHeight: Math.round(frame.getBoundingClientRect().height)," +
+          " viewportHeight: window.innerHeight," +
+          "}); })()",
+      );
+      assert.equal(collapsedPanel.panelDisplay, "none");
+      assert.equal(collapsedPanel.rows.split(" ").length, 1);
+      assert.equal(collapsedPanel.layoutHeight, collapsedPanel.viewportHeight - collapsedPanel.dockHeight);
+      assert.equal(collapsedPanel.frameHeight, collapsedPanel.viewportHeight - collapsedPanel.dockHeight);
+      run("chrome-devtools-axi", ["eval", '() => document.getElementById("panelToggle").click()'], chromeEnv);
       const narrow = evaluate(
         '(() => { document.getElementById("warningsButton").click(); const box = document.getElementById("warningsDrawer").getBoundingClientRect(); return JSON.stringify({' +
           " docOverflow: document.documentElement.scrollWidth - window.innerWidth," +

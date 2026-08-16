@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.1.52](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.51...lavish-axi-v0.1.52) (2026-08-15)
+
+
+### Bug Fixes
+
+* **whiteboard:** preserve Mermaid node label line breaks in Excalidraw ([#246](https://github.com/kunchenguid/lavish-axi/issues/246)) ([2dd70d8](https://github.com/kunchenguid/lavish-axi/commit/2dd70d8db771bf5bf1742a186a1ed196e1a16881))
+
+## [0.1.51](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.50...lavish-axi-v0.1.51) (2026-08-14)
+
+
+### Features
+
+* **attachments:** attach reference images to annotations and deliver them to the agent ([#188](https://github.com/kunchenguid/lavish-axi/issues/188)) ([3b25cbd](https://github.com/kunchenguid/lavish-axi/commit/3b25cbd00ae3406c79c681ca24d751a5bc84e761))
+
+## [0.1.50](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.49...lavish-axi-v0.1.50) (2026-08-11)
+
+
+### Bug Fixes
+
+* **server:** harden feedback submission boundaries ([#235](https://github.com/kunchenguid/lavish-axi/issues/235)) ([89412ca](https://github.com/kunchenguid/lavish-axi/commit/89412ca1c0c8490476edffa065317cd0e093afc8))
+
+## [0.1.49](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.48...lavish-axi-v0.1.49) (2026-08-11)
+
+
+### Bug Fixes
+
+* **server:** confine artifact asset route by realpath (symlink-escape hardening) ([#194](https://github.com/kunchenguid/lavish-axi/issues/194)) ([6215658](https://github.com/kunchenguid/lavish-axi/commit/62156587cd163f14e90c0e7014492d1961afa5f7))
+
 ## [0.1.48](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.47...lavish-axi-v0.1.48) (2026-08-10)
 
 

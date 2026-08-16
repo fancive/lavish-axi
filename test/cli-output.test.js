@@ -357,7 +357,7 @@ test("top-level help renders static home output without dynamic sessions", async
 });
 
 test("design output ships the DaisyUI vocabulary with a local build instead of CDN URLs", () => {
-  const output = createDesignOutput();
+  const output = createDesignOutput({ cssBuilderPath: "/checkout/local/build-css.mjs" });
 
   assert.match(output.playbook_router.instruction, /MUST open each matching playbook before writing HTML/);
   assert.equal(output.playbook_router.playbooks.length, 7);
@@ -386,8 +386,11 @@ test("design output ships the DaisyUI vocabulary with a local build instead of C
   // LOCAL PATCH: the per-artifact CSS builder replaces the CDN. Assert the whole contract the
   // agent needs to act on, because "build it locally" is useless without the command.
   assert.match(output.styling.how, /compiles ONLY the classes this artifact uses/);
-  assert.match(output.styling.build_command, /^node \S+[/\\]local[/\\]build-css\.mjs <artifact\.html> --minify/);
-  assert.match(output.styling.build_command, /\[--theme <daisyui-theme>\]/);
+  assert.equal(output.styling.build_command, "node '/checkout/local/build-css.mjs' '<artifact.html>' --minify");
+  assert.equal(
+    output.styling.themed_build_command,
+    "node '/checkout/local/build-css.mjs' '<artifact.html>' --minify --theme '<daisyui-theme>'",
+  );
   assert.match(output.styling.link_tag, /RELATIVE href/);
   assert.match(output.styling.link_tag, /Never a leading slash/);
   assert.match(output.styling.themes, /light \(default\) and dark are both compiled in/);
@@ -424,6 +427,31 @@ test("design output ships the DaisyUI vocabulary with a local build instead of C
   assert.ok(output.reference.mockup.notes.some((item) => item.includes("line numbers")));
 });
 
+test("design output shell-quotes builder and artifact path arguments", () => {
+  const output = createDesignOutput({
+    cssBuilderPath: "/checkout path/it's $(unsafe)/local/build-css.mjs",
+  });
+
+  assert.equal(
+    output.styling.build_command,
+    `node '/checkout path/it'"'"'s $(unsafe)/local/build-css.mjs' '<artifact.html>' --minify`,
+  );
+  assert.equal(
+    output.styling.themed_build_command,
+    `node '/checkout path/it'"'"'s $(unsafe)/local/build-css.mjs' '<artifact.html>' --minify --theme '<daisyui-theme>'`,
+  );
+  assert.match(output.styling.how, /artifact's shell-quoted path/);
+});
+
+test("design output withholds the build command when the local toolchain is incomplete", () => {
+  const output = createDesignOutput({ cssBuilderPath: null });
+
+  assert.equal(output.styling.build_command, null);
+  assert.equal(output.styling.themed_build_command, null);
+  assert.match(output.styling.how, /CSS build script or local Tailwind executable is unavailable/);
+  assert.match(output.styling.how, /hand-write self-contained inline CSS/);
+});
+
 // LOCAL PATCH: upstream defaults to `luxury`, which is dark. This install is light-first, and
 // the guidance has to agree with what build-css.mjs actually compiles - a theme the agent is
 // told to use but the build never emitted just silently loses its colors.
@@ -433,7 +461,7 @@ test("design output defaults to light and warns against @apply on DaisyUI classe
   assert.ok(output.theme_usage.some((item) => /^Light is the default/.test(item)));
   assert.ok(output.theme_usage.some((item) => /data-theme="dark"/.test(item) && /opt-in/.test(item)));
   assert.ok(output.theme_usage.some((item) => /does NOT follow the OS/i.test(item)));
-  assert.ok(output.theme_usage.some((item) => /`--theme <name>` on the build command/.test(item)));
+  assert.ok(output.theme_usage.some((item) => /themed_build_command with `--theme <name>`/.test(item)));
   assert.ok(!output.theme_usage.some((item) => /luxury/i.test(item)));
   assert.ok(output.theme_usage.some((item) => item.includes("@apply") && /daisyui/i.test(item)));
   assert.ok(output.theme_usage.some((item) => /aborts the whole compile/i.test(item)));
@@ -1252,6 +1280,53 @@ test("whiteboard feedback tells agents to read the summary, inspect files when n
   assert.match(output.next_step, /previewPath/);
   assert.match(output.next_step, /Mermaid source stays authoritative/);
   assert.match(output.next_step, /never try to write the \.excalidraw scene back/);
+});
+
+test("image-attachment feedback tells agents to open the local image paths", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: {
+      status: "feedback",
+      dom_snapshot: "",
+      prompts: [
+        {
+          uid: "1",
+          prompt: "Match this mock",
+          selector: "header",
+          tag: "header",
+          text: "",
+          attachments: [
+            {
+              id: "a".repeat(64) + ".png",
+              type: "image",
+              path: "/state/attachments/k/" + "a".repeat(64) + ".png",
+              mime: "image/png",
+              bytes: 1234,
+              width: 800,
+              height: 600,
+              name: "mock.png",
+            },
+          ],
+        },
+      ],
+    },
+  });
+
+  assert.match(output.next_step, /image attachments/);
+  assert.match(output.next_step, /`attachments` array/);
+  assert.match(output.next_step, /absolute local `path`/);
+});
+
+test("feedback without attachments does not mention image attachments", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: {
+      status: "feedback",
+      dom_snapshot: "",
+      prompts: [{ uid: "1", prompt: "Tweak this", selector: "h1", tag: "h1", text: "" }],
+    },
+  });
+  assert.doesNotMatch(output.next_step, /image attachments/);
 });
 
 test("non-whiteboard feedback does not mention whiteboard guidance", () => {
